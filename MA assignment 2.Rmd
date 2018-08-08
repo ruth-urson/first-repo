@@ -1,0 +1,310 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(needs)
+needs(tidyverse, magrittr, haven, labelled, knitr)
+```
+
+```{r}
+## Q1------------------
+load("ylperu.dat")
+# Make stunting variable
+# Go wide, mutate etc., for zhfa - study this code carefully!
+# we will merge this file in later
+peru_with_stunt <- peru.dat %>% 
+      select(childid, round, zhfa) %>%
+      filter(round < 3) %>% 
+      spread(key = round, value = zhfa, sep = "_zhfa_") %>% 
+      mutate(stunt_1 = ifelse(round_zhfa_1 <= -2, 1, 0),
+             stunt_2 = ifelse(round_zhfa_2 <= -2, 1, 0),
+             stunt_12 = stunt_1 + stunt_2) %>% 
+      select(childid, stunt_12) 
+
+# Let's do the same for wi, we average across rounds
+peru_with_wi <- peru.dat %>% 
+      select(childid, round, wi) %>%
+      filter(round < 3) %>% 
+      spread(key = round, value = wi, sep = "_wi_") %>% 
+      mutate(wi_ave = (round_wi_1 + round_wi_2)/2) %>% 
+      select(childid, wi_ave) 
+```
+
+```{r}
+# Now we merge the data files into the overall peru data file
+# select the variables we want, filter to keep round 2 only
+# and clean up the files
+peru_mod.dat <- left_join(peru.dat, peru_with_stunt) %>% 
+        left_join(peru_with_wi) %>% 
+        filter(round == 2) %>% 
+        select(childid, wi_ave, stunt_12, ppvtraw, cda_raw, agemon)
+rm(peru.dat, peru_with_stunt, peru_with_wi)
+
+# An alternate way of doing this is to use the group_by and summarise
+# functions, might be better in fact
+#
+# something like this:
+#
+# peru.dat %>% 
+#   select(childid, round, wi) %>%
+#   filter(round < 3) %>% 
+#   group_by(childid) %>% 
+#   summarise(sum(wi, na.rm = T))
+  
+```
+
+## Q2 ---------------
+## At this stage we need to examine the data and see if there are
+## any peculiar values; whether we need to do transformations, etc.
+## But we will leave this as an exercise for you to do.  We move on
+## to the questions at hand
+
+# Build training and test data sets
+# Set random seed first to a value to ensure replicability
+
+```{r}
+
+set.seed(pi)
+
+peru_train.dat <- sample_frac(peru_mod.dat, 0.75)
+peru_test.dat <-  setdiff(peru_mod.dat, peru_train.dat) # get that one the right way round!
+nrow(peru_mod.dat) == nrow(peru_train.dat) + nrow(peru_test.dat) #test split
+
+# Run model for cda_raw
+peru_cda.mod <- lm(cda_raw ~ stunt_12 + wi_ave + agemon, data = peru_train.dat)
+summary(peru_cda.mod)
+
+# The conclusion there is that stunting does have an effect, after controlling
+# for wi_ave and agemon.  
+
+# Run model for ppvtraw
+peru_ppvt.mod <- lm(ppvtraw ~ stunt_12 + wi_ave + agemon, data = peru_train.dat)
+summary(peru_ppvt.mod)
+
+# The conclusion there is that stunting does have an effect, after controlling
+# for wi_ave and agemon.  
+# It would be a good idea to explore the linear model now with residual plots etc.
+# to see if the model is decent, what could be improved etc.
+```
+
+
+
+## Q3 ------------------
+## We now need to generate predictions, and see what happens to MSE across
+## test and training sets.  We must also make a function for computing MSE
+
+```{r}
+# Generate predictions for model with testdata 
+peru_cda.pred.test <- predict(peru_cda.mod, newdata = peru_test.dat)
+peru_ppvt.pred.test <- predict(peru_ppvt.mod, newdata = peru_test.dat)
+
+# Generate predictions for model with traindata (observed values) 
+peru_cda.pred.train <- predict(peru_cda.mod, newdata = peru_train.dat)
+peru_ppvt.pred.train <- predict(peru_ppvt.mod, newdata = peru_train.dat)
+
+# Make MSE function 
+MSE = function (predicted, observed){
+  (observed - predicted) %>% 
+    raise_to_power(2) %>% 
+    mean (na.rm = T)
+}
+
+# Compute MSE for training data
+MSE(peru_cda.pred.train, peru_train.dat$cda_raw)
+MSE(peru_ppvt.pred.train, peru_train.dat$ppvtraw)
+
+# Compute MSE for test data
+MSE(peru_cda.pred.test, peru_test.dat$cda_raw)
+MSE(peru_ppvt.pred.test, peru_test.dat$ppvtraw)
+
+# Those numbers - let's check
+# if there is still a relation
+peru_pred.dat <- data_frame(peru_cda.pred.test, peru_test.dat$cda_raw,
+           peru_ppvt.pred.test, peru_test.dat$ppvtraw)
+
+ggplot(peru_pred.dat, aes(x = peru_cda.pred.test, y = peru_test.dat$cda_raw)) + 
+  geom_point(size = 0.3) + 
+  geom_smooth()
+
+ggplot(peru_pred.dat, aes(x = peru_ppvt.pred.test, y = peru_test.dat$ppvtraw)) + 
+  geom_point(size = 0.3) + 
+  geom_smooth()
+```
+
+
+
+## Q4 ------------------
+## Now we run the steps above 1000 times
+```{r}
+
+# First create NULL vectors for saving MSE Train and MSE Test
+    MSE_cda_train <- NULL
+    MSE_cda_test <- NULL
+    MSE_ppvt_train <- NULL
+    MSE_ppvt_test <- NULL
+    
+for (i in 1:1000){   
+    peru_train.dat <- sample_frac(peru_mod.dat, 0.75)
+    peru_test.dat <-  setdiff(peru_mod.dat, peru_train.dat) # get that one the right way round!
+    peru_cda.mod <- lm(cda_raw ~ stunt_12 + wi_ave + agemon, data = peru_train.dat)
+    peru_ppvt.mod <- lm(ppvtraw ~ stunt_12 + wi_ave + agemon, data = peru_train.dat)
+    peru_cda.pred.test <- predict(peru_cda.mod, newdata = peru_test.dat)
+    peru_ppvt.pred.test <- predict(peru_ppvt.mod, newdata = peru_test.dat)
+    peru_cda.pred.train <- predict(peru_cda.mod, newdata = peru_train.dat)
+    peru_ppvt.pred.train <- predict(peru_ppvt.mod, newdata = peru_train.dat)
+    MSE_cda_train[i] <-   MSE(peru_cda.pred.train, peru_train.dat$cda_raw)
+    MSE_ppvt_train[i] <-  MSE(peru_ppvt.pred.train, peru_train.dat$ppvtraw)
+    MSE_cda_test[i] <-    MSE(peru_cda.pred.test, peru_test.dat$cda_raw)
+    MSE_ppvt_test[i] <-   MSE(peru_ppvt.pred.test, peru_test.dat$ppvtraw)
+}    
+
+# Plot the distribution of MSE for train and test data 
+MSE_df <- data_frame(cda_test = MSE_cda_test, cda_train = MSE_cda_train, 
+                     ppvt_test = MSE_ppvt_test, ppvt_train = MSE_ppvt_train) %>% 
+  gather(key = condition, value = MSE) %>% 
+  separate(col = condition, sep = "_",  c("dv", "test_vs_train"))
+
+# compute means to show in plot
+mns <- MSE_df %>% 
+  group_by(dv, test_vs_train) %>% 
+  summarise(mean = mean(MSE),
+            sd = sd(MSE),
+            n = n(),
+            ci = sd/sqrt(n)*1.96)
+    
+ggplot(MSE_df, aes(x = MSE)) + 
+  geom_histogram(color = "red", fill = "white")  +
+  facet_grid(test_vs_train ~ dv, scales = "free") +
+  geom_vline(data = mns, aes(xintercept = mean), linetype = 2, size = 1) + 
+  geom_vline(data = mns, aes(xintercept = mean - ci), linetype = 3, size = .5) + 
+  geom_vline(data = mns, aes(xintercept = mean + ci), linetype = 3, size = .5) +
+  labs(subtitle = "Thick dashed line = mean; thin dashed lines = 95% CI")
+  
+  
+# From this we can see that the MSE for the test set is much less stable than the training
+# set - notice the dispersion
+# The mean estimate over the samples seems very similar, but the wide range of possible MSE
+# values for the test data set means that we could quite easily have obtained a test MSE 
+# very different to the training MSE
+
+# The best estimates of the training and test MSEs will be the averages
+# of the estimates over the 1000 iterations
+# These were computed above and are in dataframe mns
+
+kable(mns, digits = 2)  
+  
+# Our training model MSE generalises quite well
+
+# Clean up
+rm(list = ls())
+
+```
+
+```{r}
+
+## PART 2 =====================================================
+
+# Q5
+# Regenerate the data
+load("ylperu.dat")
+needs(tidyverse, psych, magrittr)
+# Save a set of variables to use
+peru_exp.dat <- peru.dat %>% 
+      filter(round < 3, chlang %in% c(31,32,35, 37)) %>%
+      mutate(chlang = ifelse(chlang == 31, "Spanish", "Indig")) %>% 
+      select(childid, sex, agemon, wi, stunt, typesite, chlang, 
+             indigenous, momedu, dadedu, round, ppvtraw, cda_raw)
+
+peru_exp.dat %>% 
+  filter(round == 1) %>% 
+  select(-childid, -chlang, -round, -ppvtraw, -cda_raw) %>%
+  pairs.panels
+
+# Drop dadedu, strongly correlated with momedu
+peru_exp.dat %>% 
+  filter(round == 2) %>% 
+  select(-childid, -chlang, -round, -dadedu) %>%
+  pairs.panels
+
+# There are many strong correlations between outcomes and other vars,
+# but very important to note is that age of child (agemon) is moderately
+# correlated with many potential moderators.  We will have to control for
+# this in all analyses
+
+# Let's also try what is known as a correlogram
+needs(corrgram)
+peru_exp.dat %>% 
+  filter(round == 2) %>% 
+  select(-childid, -chlang, -round, -dadedu) %>%
+  corrgram (order=TRUE, lower.panel=panel.shade,
+            upper.panel=NULL, text.panel=panel.txt)
+
+
+# Since we have agemon correlating with lots of things
+# we need to establish that the relations are still
+# there between other IVs and the outcomes, controlling
+# for agemon.  We do this by computing a correlation matrix
+# and then computing partial correlations, removing agemon
+peru_exp.rmat <-  peru_exp.dat %>% 
+      select(-childid, -chlang, -round) %>% 
+      cor(use = "pairwise.complete.obs") 
+
+partial.r(peru_exp.rmat,c(3:10),c(2))
+
+# We can see that there are still lots of strongish
+# correlations between IVs, and IV-outcomes
+
+# Let's see if we can see any relation between mom's
+# edu and vocabulary, conditional on growth stunting
+# and rural/urban area of residence
+peru_exp.dat %>% 
+  filter(!is.na(ppvtraw), !is.na(momedu), !is.na(stunt)) %>% 
+  mutate(stunt = ifelse(stunt == 1, "Stunted", "Not Stunted")) %>% 
+  mutate(typesite = ifelse(typesite == 1, "Urban", "Rural")) %>% 
+ggplot(aes(x = momedu, y = ppvtraw, color = wi)) +
+  geom_jitter(size = 0.2) + 
+  facet_grid(typesite ~ stunt) + 
+  scale_colour_gradientn(colours=rainbow(4)) +  
+  geom_smooth(method = "lm")
+
+# Interesting!  Suggests that stunting-ppvt relation can be ameliorated in
+# urban settings when mom is better educated.  Rural kids seem affected 
+# regardless of mom's education.  The wealth index seems especially at
+# work in the urban sample, where it seems collinear with mom's education.
+# There are few cases in the rural sample of very high wi kids, but this
+# seems equally true across stunted and not stunted kids, so it is not
+# wi then that may explain the different relation of ppvt and momedu between
+# stunted and not stunted kids
+
+  
+peru_exp.dat %>% 
+  filter(!is.na(ppvtraw), !is.na(momedu), !is.na(stunt)) %>% 
+  mutate(stunt = ifelse(stunt == 1, "Stunted", "Not Stunted")) %>% 
+  mutate(typesite = ifelse(typesite == 1, "Urban", "Rural")) %>% 
+  ggplot(aes(x = momedu, y = cda_raw, color = wi)) +
+  geom_jitter(size = 0.2) + 
+  facet_grid(typesite ~ stunt) + 
+  scale_colour_gradientn(colours=rainbow(4)) +  
+  geom_smooth(method = "lm")
+
+# Repeating this analysis with the quantitative outcome, cda,
+# we see a similar pattern, but it may be that low performance
+# on the cda is masking things a bit.  We repeat, taking only kids 
+# who score above 4
+peru_exp.dat %>% 
+  filter(!is.na(ppvtraw), !is.na(momedu), !is.na(stunt), cda_raw > 4) %>% 
+  mutate(stunt = ifelse(stunt == 1, "Stunted", "Not Stunted")) %>% 
+  mutate(typesite = ifelse(typesite == 1, "Urban", "Rural")) %>% 
+  ggplot(aes(x = momedu, y = cda_raw, color = wi)) +
+  geom_jitter(size = 0.2) + 
+  facet_grid(typesite ~ stunt) + 
+  scale_colour_gradientn(colours=rainbow(4)) +  
+  geom_smooth(method = "lm")
+
+# That does suggest that there is something different about the
+# stunted rural kids on the quantitative outcome
+
+```
+
